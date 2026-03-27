@@ -252,35 +252,36 @@ fn create_locator() -> windows_core::Result<IWbemLocator> {
     Ok(loc)
 }
 
+#[cfg(target_vendor = "win7")]
 fn create_locator_or_init() -> windows_core::Result<IWbemLocator> {
+    // `CoIncrementMTAUsage` is not available on Windows 7,
+    // so it is the responsibly of the caller to initialize COM and the security layer,
+    // using `CoInitializeEx` and `CoInitializeSecurity`, respectively.
+    create_locator()
+}
+
+#[cfg(not(target_vendor = "win7"))]
+fn create_locator_or_init() -> windows_core::Result<IWbemLocator> {
+    use windows::Win32::Foundation::RPC_E_TOO_LATE;
+    use windows::Win32::System::Com::CoIncrementMTAUsage;
+
     let loc_res = create_locator();
     match loc_res {
         // If COM is not initialized, initialize it and try again.
         // Based on [`load_factory`](https://github.com/microsoft/windows-rs/blob/945130accc25ac18a47054115e861ca704a37eb5/crates/libs/core/src/imp/factory_cache.rs#L73)
         // from the `windows-rs` crate.
         Err(err) if err.code() == CO_E_NOTINITIALIZED => {
-            #[cfg(target_vendor = "win7")]
+            let _ = unsafe { CoIncrementMTAUsage() }?;
+            let sec_result = init_security();
+
+            // If security was initialized already, there's no need to return an error.
+            if let Err(err) = &sec_result
+                && err.code() != RPC_E_TOO_LATE
             {
-                Err(err)
+                sec_result?;
             }
 
-            #[cfg(not(target_vendor = "win7"))]
-            {
-                use windows::Win32::Foundation::RPC_E_TOO_LATE;
-                use windows::Win32::System::Com::CoIncrementMTAUsage;
-
-                let _ = unsafe { CoIncrementMTAUsage() }?;
-                let sec_result = init_security();
-
-                // If security was initialized already, there's no need to return an error.
-                if let Err(err) = &sec_result
-                    && err.code() != RPC_E_TOO_LATE
-                {
-                    sec_result?;
-                }
-
-                create_locator()
-            }
+            create_locator()
         }
         loc_res => loc_res,
     }
